@@ -12,8 +12,6 @@ Home-grown alternative implementation of Apple Internet Router 3.0
 ### Stretch goals
 
 - Direct TashTalk support
-- Non-seed and soft-seed modes
-- Netatalk compatibility (on same host)
 
 ## Things that used to be caveats
 
@@ -25,6 +23,8 @@ Home-grown alternative implementation of Apple Internet Router 3.0
 - In addition to the configured EtherTalk network and zone, it now learns
   routes and zones from other EtherTalk routers, and should share them across
   AURP.
+- **NEW:** Soft-seed and non-seed router modes are now supported, enabling
+  coexistence with Netatalk's atalkd on the same network (see below).
 - There's a status endpoint that outputs diagnostic information about the
   state of the server. Set the `monitoring_addr` config option and then browse
   to `http://[your router]:[port you configured]/status` to see information
@@ -32,16 +32,93 @@ Home-grown alternative implementation of Apple Internet Router 3.0
 
 ## Caveats & known bugs
 
-- For expediency I made it act as a _seed router_ only. I hope to add "non-seed"
-  and "soft-seed" mode soon!
-- I have not yet tested with `netatalk` on the same host. I have seen reports
-  that it is (at best) very flaky (zones appearing and disappearing). For now I
-  recommend running `jrouter` and `netatalk` on separate hosts.
 - Some packet types aren't currently split correctly to fit within limits. This
   mainly affects routers try to that advertise lots of routes or zones.
 - The AURP implementation is about 99.5% complete.
 
 The issues in this repo should be updated as things get fixed.
+
+## Router Modes
+
+jrouter supports three router modes for EtherTalk ports:
+
+### Seed Mode (default)
+
+In seed mode, jrouter is authoritative for the network configuration. It defines
+the network number range and zone names, and responds to GetNetInfo queries from
+other nodes.
+
+```yaml
+ethertalk:
+  - device: eth0
+    router_mode: seed       # Optional, this is the default
+    zone_name: MyZone
+    net_start: 100
+    net_end: 100
+```
+
+### Soft-Seed Mode
+
+In soft-seed mode, jrouter first queries for an existing seed router on the
+network. If found, it learns the network configuration from the seed router. If
+no seed router responds, it falls back to seed mode using its configured values.
+
+This mode is useful for coexisting with Netatalk's atalkd when atalkd is
+configured as the seed router:
+
+```yaml
+ethertalk:
+  - device: eth0
+    router_mode: soft-seed
+    zone_name: MyZone       # Used for validation and fallback
+    net_start: 100          # Required for fallback
+    net_end: 100
+    # seed_router: 100.37   # Optional: specific seed router to query
+```
+
+### Non-Seed Mode
+
+In non-seed mode, jrouter must learn its configuration from a seed router. If no
+seed router responds, startup fails. This is the safest mode when another router
+(like atalkd) is definitely the seed.
+
+```yaml
+ethertalk:
+  - device: eth0
+    router_mode: non-seed
+    zone_name: MyZone       # Used for validation
+    # net_start/net_end not needed - learned from seed
+```
+
+### Coexisting with Netatalk
+
+To run jrouter alongside Netatalk's atalkd on the same network:
+
+1. Configure atalkd as the seed router:
+   ```
+   # /etc/atalkd.conf
+   eth1 -router -phase 2 -net 650 -addr 650.37 -zone "MyZone"
+   ```
+
+2. Configure jrouter in soft-seed or non-seed mode:
+   ```yaml
+   # jrouter.yaml
+   ethertalk:
+     - device: eth0
+       router_mode: soft-seed
+       zone_name: MyZone
+       net_start: 650
+       net_end: 650
+       ethernet_addr: '08:00:07:FE:DC:BA'  # Use different MAC to avoid conflicts
+   ```
+
+3. Start atalkd first, then jrouter
+
+The key points are:
+- Use separate network interfaces if possible (eth0 for jrouter, eth1 for atalkd)
+- If on the same interface, use `ethernet_addr` to give jrouter a different MAC
+- Let atalkd be the seed router, jrouter will learn from it
+- jrouter will still provide AURP tunneling to remote networks
 
 ## How to use
 
