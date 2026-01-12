@@ -99,17 +99,32 @@ type EtherTalkConfig struct {
 	// Device is the Ethernet device name (e.g. eth0, enp2s0, en3). Required.
 	Device string `yaml:"device"`
 
+	// RouterMode specifies how this port operates. Optional: defaults to "seed".
+	// Options:
+	//   - "seed": Act as a seed router (authoritative for network/zone config)
+	//   - "soft-seed": Query seed router for config, but can provide it if none available
+	//   - "non-seed": Must query seed router for config (fail if none available)
+	RouterMode string `yaml:"router_mode"`
+
+	// SeedRouter specifies the AppleTalk address of a seed router to query for
+	// network configuration (used in soft-seed and non-seed modes).
+	// Optional: defaults to broadcast (0.0.255) if not specified.
+	// Example: "650.37" to query a specific router
+	SeedRouter string `yaml:"seed_router"`
+
 	// DefaultZoneName is the AppleTalk zone name for the network on this
-	// interface. Required.
+	// interface. Required for seed mode, used for validation in soft-seed/non-seed.
 	DefaultZoneName string `yaml:"zone_name"`
 
 	// ExtraZones is a list of any additional zone names that are available
 	// within this local network. Nodes can choose from the default zone name
 	// or any of these additional names.
+	// Only applies in seed mode.
 	ExtraZones []string `yaml:"extra_zones"`
 
 	// NetStart and NetEnd control the network number range for the AppleTalk
-	// network on this interface (inclusive). Required.
+	// network on this interface (inclusive). Required for seed mode.
+	// In soft-seed/non-seed modes, these are learned from the seed router.
 	NetStart ddp.Network `yaml:"net_start"`
 	NetEnd   ddp.Network `yaml:"net_end"`
 }
@@ -134,25 +149,44 @@ func LoadConfig(cfgPath string) (*Config, error) {
 
 	var validationErrs []error
 
-	// Check zone names
+	// Check zone names and router mode configuration
 	for _, port := range c.EtherTalk {
+		// Default router mode to "seed"
+		if port.RouterMode == "" {
+			port.RouterMode = "seed"
+		}
+
+		// Validate router mode
+		switch port.RouterMode {
+		case "seed", "soft-seed", "non-seed":
+			// Valid modes
+		default:
+			validationErrs = append(validationErrs, fmt.Errorf("port %q has invalid router_mode %q; must be 'seed', 'soft-seed', or 'non-seed'", port.Device, port.RouterMode))
+		}
+
+		// Seed mode is authoritative for this network's configuration, so it
+		// must specify a valid network-number range. In soft-seed/non-seed
+		// modes the range is learned from a seed router and may be left unset.
+		//
 		// Invalid network numbers are:
 		//
 		// 	0x0000 (0) - used for unknown or the local network
 		// 	0xff00 - 0xfffe (65280 thru 65534) - the startup range
 		// 	0xffff (65535) - probably invalid? I couldn't find anything
 		// 		talking about it in Inside AppleTalk
-		if port.NetStart > port.NetEnd {
-			validationErrs = append(validationErrs, fmt.Errorf("the network number range used for port %q is backwards (start %d > end %d)", port.Device, port.NetStart, port.NetEnd))
-		}
-		if port.NetStart == 0 || port.NetEnd == 0 {
-			validationErrs = append(validationErrs, fmt.Errorf("invalid network number 0 used for port %q", port.Device))
-		}
-		if port.NetStart == 0xffff || port.NetEnd == 0xffff {
-			validationErrs = append(validationErrs, fmt.Errorf("invalid network number 65535 used for port %q", port.Device))
-		}
-		if (port.NetStart >= 0xff00 && port.NetStart <= 0xfffe) || (port.NetEnd >= 0xff00 && port.NetEnd <= 0xfffe) {
-			validationErrs = append(validationErrs, fmt.Errorf("invalid network number range (%d - %d) used for port %q; it must not overlap the startup range (65280 - 65534)", port.NetStart, port.NetEnd, port.Device))
+		if port.RouterMode == "seed" {
+			if port.NetStart == 0 || port.NetEnd == 0 {
+				validationErrs = append(validationErrs, fmt.Errorf("port %q in seed mode must specify net_start and net_end", port.Device))
+			}
+			if port.NetStart > port.NetEnd {
+				validationErrs = append(validationErrs, fmt.Errorf("the network number range used for port %q is backwards (start %d > end %d)", port.Device, port.NetStart, port.NetEnd))
+			}
+			if port.NetStart == 0xffff || port.NetEnd == 0xffff {
+				validationErrs = append(validationErrs, fmt.Errorf("invalid network number 65535 used for port %q", port.Device))
+			}
+			if (port.NetStart >= 0xff00 && port.NetStart <= 0xfffe) || (port.NetEnd >= 0xff00 && port.NetEnd <= 0xfffe) {
+				validationErrs = append(validationErrs, fmt.Errorf("invalid network number range (%d - %d) used for port %q; it must not overlap the startup range (65280 - 65534)", port.NetStart, port.NetEnd, port.Device))
+			}
 		}
 
 		// 255 is the limit on available zones for a network.
