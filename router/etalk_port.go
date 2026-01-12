@@ -67,6 +67,20 @@ Status: {{.Status}}<br/>
 {{end}}
 `
 
+// RouterMode defines how an EtherTalk port operates.
+type RouterMode string
+
+const (
+	// RouterModeSeed means this port is authoritative for network/zone config.
+	RouterModeSeed RouterMode = "seed"
+
+	// RouterModeSoftSeed means this port queries for config but can seed if none available.
+	RouterModeSoftSeed RouterMode = "soft-seed"
+
+	// RouterModeNonSeed means this port must query for config (fails if none available).
+	RouterModeNonSeed RouterMode = "non-seed"
+)
+
 // EtherTalkPort is all the data and helpers needed for EtherTalk on one port.
 type EtherTalkPort struct {
 	// General references to broader things
@@ -84,10 +98,29 @@ type EtherTalkPort struct {
 	defaultZoneName string
 	availableZones  Set[string]
 
+	// Router mode configuration
+	routerMode       RouterMode
+	configuredZone   string      // Zone from config (for validation in soft-seed)
+	seedRouterAddr   ddp.Addr    // Specific seed router to query (optional)
+	networkLearned   bool        // True if network info was learned from seed router
+
 	// Outbound packet queueing
 	outboxesMu        sync.Mutex
 	outboxes          map[<-chan struct{}]*outbox
 	outboxesChangedCh chan struct{}
+}
+
+// EtherTalkPortConfig holds configuration for creating an EtherTalk port.
+type EtherTalkPortConfig struct {
+	Device          string
+	EthernetAddr    ethernet.Addr
+	NetStart        ddp.Network
+	NetEnd          ddp.Network
+	DefaultZoneName string
+	AvailableZones  Set[string]
+	PcapHandle      *pcap.Handle
+	RouterMode      RouterMode
+	SeedRouterAddr  ddp.Addr // Optional: specific seed router to query
 }
 
 // NewEtherTalkPort defines a new EtherTalk port for the router.
@@ -100,18 +133,42 @@ func (router *Router) NewEtherTalkPort(
 	availableZones Set[string],
 	pcapHandle *pcap.Handle) *EtherTalkPort {
 
+	return router.NewEtherTalkPortWithConfig(EtherTalkPortConfig{
+		Device:          device,
+		EthernetAddr:    ethernetAddr,
+		NetStart:        netStart,
+		NetEnd:          netEnd,
+		DefaultZoneName: defaultZoneName,
+		AvailableZones:  availableZones,
+		PcapHandle:      pcapHandle,
+		RouterMode:      RouterModeSeed, // Default to seed mode for backward compatibility
+	})
+}
+
+// NewEtherTalkPortWithConfig defines a new EtherTalk port with full configuration.
+func (router *Router) NewEtherTalkPortWithConfig(cfg EtherTalkPortConfig) *EtherTalkPort {
+	mode := cfg.RouterMode
+	if mode == "" {
+		mode = RouterModeSeed
+	}
+
 	port := &EtherTalkPort{
 		// Add router to port
 		router: router,
 
-		logger:          router.Logger.With("device", device),
-		device:          device,
-		ethernetAddr:    ethernetAddr,
-		netStart:        netStart,
-		netEnd:          netEnd,
-		defaultZoneName: defaultZoneName,
-		availableZones:  availableZones,
-		pcapHandle:      pcapHandle,
+		logger:          router.Logger.With("device", cfg.Device),
+		device:          cfg.Device,
+		ethernetAddr:    cfg.EthernetAddr,
+		netStart:        cfg.NetStart,
+		netEnd:          cfg.NetEnd,
+		defaultZoneName: cfg.DefaultZoneName,
+		availableZones:  cfg.AvailableZones,
+		pcapHandle:      cfg.PcapHandle,
+
+		routerMode:       mode,
+		configuredZone:   cfg.DefaultZoneName,
+		seedRouterAddr:   cfg.SeedRouterAddr,
+		networkLearned:   false,
 
 		outboxes:          make(map[<-chan struct{}]*outbox),
 		outboxesChangedCh: make(chan struct{}, 1),
@@ -120,18 +177,38 @@ func (router *Router) NewEtherTalkPort(
 	router.Ports = append(router.Ports, port)
 
 	// Add AARP to port
-	port.aarpMachine = NewAARPMachine(port.logger, port, ethernetAddr)
+	port.aarpMachine = NewAARPMachine(port.logger, port, cfg.EthernetAddr)
 
-	// Add port to routing table
-	if _, err := router.RouteTable.UpsertRoute(port, true /* extended */, netStart, netEnd, 0); err != nil {
-		port.logger.Error("Couldn't create route for EtherTalk port", "error", err)
-		os.Exit(1)
+	// For seed mode, immediately add routes. For soft-seed/non-seed, routes are
+	// added after learning from the seed router.
+	if mode == RouterModeSeed {
+		if _, err := router.RouteTable.UpsertRoute(port, true /* extended */, cfg.NetStart, cfg.NetEnd, 0); err != nil {
+			port.logger.Error("Couldn't create route for EtherTalk port", "error", err)
+			os.Exit(1)
+		}
+		if err := router.RouteTable.AddZonesToNetwork(cfg.NetStart, cfg.AvailableZones.ToSlice()...); err != nil {
+			port.logger.Error("Couldn't add zones to route that was just created", "error", err)
+			os.Exit(1)
+		}
 	}
-	if err := router.RouteTable.AddZonesToNetwork(netStart, availableZones.ToSlice()...); err != nil {
-		port.logger.Error("Couldn't add zones to route that was just created", "error", err)
-		os.Exit(1)
-	}
+
 	return port
+}
+
+// IsSeedRouter returns true if this port is operating as a seed router.
+func (port *EtherTalkPort) IsSeedRouter() bool {
+	return port.routerMode == RouterModeSeed ||
+		(port.routerMode == RouterModeSoftSeed && !port.networkLearned)
+}
+
+// GetRouterMode returns the router mode for this port.
+func (port *EtherTalkPort) GetRouterMode() RouterMode {
+	return port.routerMode
+}
+
+// GetDevice returns the device name for this port.
+func (port *EtherTalkPort) GetDevice() string {
+	return port.device
 }
 
 // Outbox runs a loop that waits for AARP resolutions to complete, and once they

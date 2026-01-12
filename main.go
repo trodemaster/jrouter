@@ -40,6 +40,7 @@ import (
 	"github.com/google/gopacket/pcap"
 	"github.com/lmittmann/tint"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/sfiera/multitalk/pkg/ddp"
 	"github.com/sfiera/multitalk/pkg/ethernet"
 )
 
@@ -197,15 +198,42 @@ func main() {
 		zones := router.MakeSet(etcfg.DefaultZoneName)
 		zones.Insert(etcfg.ExtraZones...)
 
-		rooter.NewEtherTalkPort(
-			etcfg.Device,
-			myHWAddr,
-			etcfg.NetStart,
-			etcfg.NetEnd,
-			etcfg.DefaultZoneName,
-			zones,
-			handle,
-		)
+		// Determine router mode
+		routerMode := router.RouterModeSeed
+		switch etcfg.RouterMode {
+		case "soft-seed":
+			routerMode = router.RouterModeSoftSeed
+		case "non-seed":
+			routerMode = router.RouterModeNonSeed
+		case "seed", "":
+			routerMode = router.RouterModeSeed
+		}
+
+		// Parse seed router address if specified
+		var seedRouterAddr ddp.Addr
+		if etcfg.SeedRouter != "" {
+			var network, node int
+			if _, err := fmt.Sscanf(etcfg.SeedRouter, "%d.%d", &network, &node); err != nil {
+				logger.Error("Couldn't parse seed_router address", "seed_router", etcfg.SeedRouter, "error", err)
+				os.Exit(1)
+			}
+			seedRouterAddr = ddp.Addr{
+				Network: ddp.Network(network),
+				Node:    ddp.Node(node),
+			}
+		}
+
+		rooter.NewEtherTalkPortWithConfig(router.EtherTalkPortConfig{
+			Device:          etcfg.Device,
+			EthernetAddr:    myHWAddr,
+			NetStart:        etcfg.NetStart,
+			NetEnd:          etcfg.NetEnd,
+			DefaultZoneName: etcfg.DefaultZoneName,
+			AvailableZones:  zones,
+			PcapHandle:      handle,
+			RouterMode:      routerMode,
+			SeedRouterAddr:  seedRouterAddr,
+		})
 	}
 
 	// -------------------------------- Peers ---------------------------------
@@ -311,6 +339,15 @@ func main() {
 	//
 	for _, etPort := range rooter.Ports {
 		ctx := etPort.StatusCtx(ctx)
+
+		// For soft-seed and non-seed modes, initialize from seed router first
+		if etPort.GetRouterMode() != router.RouterModeSeed {
+			logger.Info("Initializing soft-seed mode", "device", etPort.GetDevice())
+			if _, err := etPort.InitializeSoftSeed(ctx); err != nil {
+				logger.Error("Soft-seed initialization failed", "device", etPort.GetDevice(), "error", err)
+				os.Exit(1)
+			}
+		}
 
 		// Run AARP and RTMP on each port.
 		go etPort.RunAARP(ctx)
