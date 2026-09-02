@@ -154,11 +154,11 @@ func (port *EtherTalkPort) sendGetNetInfoQuery(ctx context.Context) (*SoftSeedRe
 	// Build the GetNetInfo query packet
 	queryData := make([]byte, 7+len(port.configuredZone))
 	queryData[0] = zip.FunctionGetNetInfo // ZIP command: GetNetInfo (5)
-	queryData[1] = 0                       // Flags: reserved
-	queryData[2] = 0                       // Reserved
-	queryData[3] = 0                       // Reserved
-	queryData[4] = 0                       // Reserved
-	queryData[5] = 0                       // Reserved
+	queryData[1] = 0                      // Flags: reserved
+	queryData[2] = 0                      // Reserved
+	queryData[3] = 0                      // Reserved
+	queryData[4] = 0                      // Reserved
+	queryData[5] = 0                      // Reserved
 	queryData[6] = byte(len(port.configuredZone))
 	copy(queryData[7:], port.configuredZone)
 
