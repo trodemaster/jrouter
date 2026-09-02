@@ -99,10 +99,10 @@ type EtherTalkPort struct {
 	availableZones  Set[string]
 
 	// Router mode configuration
-	routerMode       RouterMode
-	configuredZone   string      // Zone from config (for validation in soft-seed)
-	seedRouterAddr   ddp.Addr    // Specific seed router to query (optional)
-	networkLearned   bool        // True if network info was learned from seed router
+	routerMode     RouterMode
+	configuredZone string   // Zone from config (for validation in soft-seed)
+	seedRouterAddr ddp.Addr // Specific seed router to query (optional)
+	networkLearned bool     // True if network info was learned from seed router
 
 	// Outbound packet queueing
 	outboxesMu        sync.Mutex
@@ -165,10 +165,10 @@ func (router *Router) NewEtherTalkPortWithConfig(cfg EtherTalkPortConfig) *Ether
 		availableZones:  cfg.AvailableZones,
 		pcapHandle:      cfg.PcapHandle,
 
-		routerMode:       mode,
-		configuredZone:   cfg.DefaultZoneName,
-		seedRouterAddr:   cfg.SeedRouterAddr,
-		networkLearned:   false,
+		routerMode:     mode,
+		configuredZone: cfg.DefaultZoneName,
+		seedRouterAddr: cfg.SeedRouterAddr,
+		networkLearned: false,
 
 		outboxes:          make(map[<-chan struct{}]*outbox),
 		outboxesChangedCh: make(chan struct{}, 1),

@@ -25,23 +25,23 @@ import (
 
 func TestParseGetNetInfoReply(t *testing.T) {
 	tests := []struct {
-		name        string
-		data        []byte
-		wantErr     bool
-		wantResult  *SoftSeedResult
+		name       string
+		data       []byte
+		wantErr    bool
+		wantResult *SoftSeedResult
 	}{
 		{
 			name: "valid reply with zone",
 			data: func() []byte {
 				// Build a valid GetNetInfo Reply packet
 				data := make([]byte, 0, 50)
-				data = append(data, zip.FunctionGetNetInfoReply) // Command
-				data = append(data, 0x20)                        // Flags: OnlyOneZone
-				data = append(data, 0x02, 0x8A)                  // NetStart: 650
-				data = append(data, 0x02, 0x8A)                  // NetEnd: 650
-				data = append(data, 10)                          // Zone name length
-				data = append(data, "netjibbing"...)             // Zone name
-				data = append(data, 6)                           // Multicast length
+				data = append(data, zip.FunctionGetNetInfoReply)        // Command
+				data = append(data, 0x20)                               // Flags: OnlyOneZone
+				data = append(data, 0x02, 0x8A)                         // NetStart: 650
+				data = append(data, 0x02, 0x8A)                         // NetEnd: 650
+				data = append(data, 10)                                 // Zone name length
+				data = append(data, "netjibbing"...)                    // Zone name
+				data = append(data, 6)                                  // Multicast length
 				data = append(data, 0x09, 0x00, 0x07, 0xFF, 0xFF, 0xFF) // Multicast addr
 				return data
 			}(),
@@ -57,16 +57,16 @@ func TestParseGetNetInfoReply(t *testing.T) {
 			name: "reply with invalid zone and default zone",
 			data: func() []byte {
 				data := make([]byte, 0, 70)
-				data = append(data, zip.FunctionGetNetInfoReply) // Command
-				data = append(data, 0x80|0x20)                   // Flags: ZoneInvalid + OnlyOneZone
-				data = append(data, 0x00, 0x64)                  // NetStart: 100
-				data = append(data, 0x00, 0xC8)                  // NetEnd: 200
-				data = append(data, 7)                           // Zone name length
-				data = append(data, "invalid"...)                // Zone name (invalid)
-				data = append(data, 6)                           // Multicast length
+				data = append(data, zip.FunctionGetNetInfoReply)        // Command
+				data = append(data, 0x80|0x20)                          // Flags: ZoneInvalid + OnlyOneZone
+				data = append(data, 0x00, 0x64)                         // NetStart: 100
+				data = append(data, 0x00, 0xC8)                         // NetEnd: 200
+				data = append(data, 7)                                  // Zone name length
+				data = append(data, "invalid"...)                       // Zone name (invalid)
+				data = append(data, 6)                                  // Multicast length
 				data = append(data, 0x09, 0x00, 0x07, 0xFF, 0xFF, 0xFF) // Multicast addr
-				data = append(data, 10)                          // Default zone name length
-				data = append(data, "netjibbing"...)             // Default zone name
+				data = append(data, 10)                                 // Default zone name length
+				data = append(data, "netjibbing"...)                    // Default zone name
 				return data
 			}(),
 			wantErr: false,
@@ -144,7 +144,7 @@ func TestRouterModeConstants(t *testing.T) {
 func TestBuildGetNetInfoQuery(t *testing.T) {
 	// Test that we can build a valid GetNetInfo query packet
 	zoneName := "netjibbing"
-	
+
 	queryData := make([]byte, 7+len(zoneName))
 	queryData[0] = zip.FunctionGetNetInfo
 	queryData[1] = 0 // Flags
