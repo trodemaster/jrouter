@@ -242,10 +242,7 @@ func main() {
 	var resolverWG sync.WaitGroup
 	peerCh := make(chan string)
 	for range runtime.GOMAXPROCS(0) {
-		resolverWG.Add(1)
-		go func() {
-			defer resolverWG.Done()
-
+		resolverWG.Go(func() {
 			for {
 				var peerStr string
 				select {
@@ -285,7 +282,7 @@ func main() {
 					continue
 				}
 			}
-		}()
+		})
 	}
 
 	for _, peerStr := range cfg.Peers {
