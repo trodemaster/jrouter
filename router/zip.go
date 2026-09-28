@@ -169,7 +169,14 @@ func (port *EtherTalkPort) handleZIPReply(zipkt *zip.ReplyPacket) error {
 }
 
 func (port *EtherTalkPort) handleZIPGetNetInfo(ctx context.Context, ddpkt *ddp.ExtPacket, zipkt *zip.GetNetInfoPacket) error {
-	port.logger.Debug("ZIP: Got GetNetInfo", "zone", zipkt.ZoneName)
+	port.logger.Debug("ZIP: Got GetNetInfo", "zone", zipkt.ZoneName, "router-mode", port.routerMode)
+
+	// In non-seed mode (or soft-seed after learning), don't respond to GetNetInfo queries.
+	// Only seed routers should provide network configuration.
+	if !port.IsSeedRouter() {
+		port.logger.Debug("ZIP: Ignoring GetNetInfo request (not a seed router)")
+		return nil
+	}
 
 	// The request is zoneValid if the zone name is available on this network.
 	zoneValid := port.availableZones.Contains(zipkt.ZoneName)

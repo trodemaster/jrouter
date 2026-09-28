@@ -46,6 +46,13 @@ func (rtr *Router) HandleAEP(ctx context.Context, ddpkt *ddp.ExtPacket) error {
 		ddpkt.DstNode, ddpkt.SrcNode = ddpkt.SrcNode, ddpkt.DstNode
 		ddpkt.DstSocket, ddpkt.SrcSocket = ddpkt.SrcSocket, ddpkt.DstSocket
 		ddpkt.Data[0] = byte(aep.EchoReply)
+		// The request's checksum no longer matches the modified packet, and
+		// receivers that verify checksums (e.g. Linux) would drop the reply.
+		// Zero means "no checksum".
+		ddpkt.Cksum = 0
+		// The reply is a new datagram, so its hop count starts over. (The hop
+		// count is stored in the upper bits of Size.)
+		ddpkt.Size &= 0x3ff
 
 		return rtr.Output(ctx, ddpkt)
 
