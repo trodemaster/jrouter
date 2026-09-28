@@ -72,6 +72,14 @@ func (r *Router) AURPInput(ctx context.Context, logger *slog.Logger, wg *sync.Wa
 
 		logger.Debug("AURP: Read packet from peer", "pkt-type", reflect.TypeOf(pkt), "raddr", raddr, "sourceDI", dh.SourceDI)
 
+		// A packet bearing our own DI is from us: e.g. a peer list entry for
+		// our own public name, reached via hairpin NAT. Peering with ourselves
+		// loops routes, so drop it.
+		if isSelfDI(dh.SourceDI, localDI) {
+			logger.Debug("AURP: Dropping packet with our own source DI", "raddr", raddr, "sourceDI", dh.SourceDI)
+			continue
+		}
+
 		var peer *AURPPeer
 		if cfg.OpenPeering {
 			p, err := r.AURPPeers.LookupOrCreate(ctx, logger, r.RouteTable, udpConn, "", raddr.IP, localDI, dh.SourceDI)
@@ -172,4 +180,18 @@ func (r *Router) AURPInput(ctx context.Context, logger *slog.Logger, wg *sync.Wa
 			logger.Error("AURP: Unknown packet type", "dh-packettype", dh.PacketType)
 		}
 	}
+}
+
+// isSelfDI reports whether di is the same IP domain identifier as local.
+// (IPDomainIdentifier is a slice, so the interfaces can't be compared with ==.)
+func isSelfDI(di, local aurp.DomainIdentifier) bool {
+	a, ok := di.(aurp.IPDomainIdentifier)
+	if !ok {
+		return false
+	}
+	b, ok := local.(aurp.IPDomainIdentifier)
+	if !ok {
+		return false
+	}
+	return net.IP(a).Equal(net.IP(b))
 }
