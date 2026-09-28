@@ -118,6 +118,15 @@ func (port *EtherTalkPort) HandleRTMP(ctx context.Context, pkt *ddp.ExtPacket) e
 
 		var noZones []ddp.Network
 		for _, nt := range dataPkt.NetworkTuples {
+			// Tuples at or beyond the maximum distance mean "unreachable"
+			// (e.g. distance 31 = notify-neighbor, which atalkd sends to poison
+			// routes it learned from us). Skip them rather than abandoning the
+			// rest of the packet.
+			if nt.Distance+1 > maxRouteDistance {
+				port.logger.Debug("RTMP: Skipping unreachable tuple",
+					"net-start", nt.RangeStart, "net-end", nt.RangeEnd, "distance", nt.Distance)
+				continue
+			}
 			route, err := port.router.RouteTable.UpsertRoute(
 				peer,
 				nt.Extended,
