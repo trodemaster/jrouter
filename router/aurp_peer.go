@@ -247,8 +247,7 @@ func (p *AURPPeer) DumpChatLog() []ChatLogEntry {
 // Handle handles incoming packets, maintains the connections, and runs periodic
 // tasks for this peer. It is safe to call multiple times concurrently - only
 // one will run.
-func (p *AURPPeer) Handle(ctx context.Context, wg *sync.WaitGroup) {
-	defer wg.Done()
+func (p *AURPPeer) Handle(ctx context.Context) {
 	if !p.running.CompareAndSwap(false, true) {
 		p.logger.Debug("AURP: handle loop for peer already running", "raddr", p.RemoteAddr)
 		return
@@ -266,10 +265,8 @@ func (p *AURPPeer) Handle(ctx context.Context, wg *sync.WaitGroup) {
 	p.lastUpdate.Store(now)
 	p.sendRetries.Store(0)
 
-	rticker := time.NewTicker(1 * time.Second)
-	defer rticker.Stop()
-	sticker := time.NewTicker(1 * time.Second)
-	defer sticker.Stop()
+	rticker := time.Tick(1 * time.Second)
+	sticker := time.Tick(1 * time.Second)
 
 	// Write an Open-Req packet
 	if _, err := p.send(p.Transport.NewOpenReqPacket(nil)); err != nil {
@@ -307,12 +304,12 @@ func (p *AURPPeer) Handle(ctx context.Context, wg *sync.WaitGroup) {
 			}
 			p.setRState(ReceiverWaitForOpenRsp)
 
-		case <-rticker.C:
+		case <-rticker:
 			if err := p.rtickerTasks(); err != nil {
 				return
 			}
 
-		case <-sticker.C:
+		case <-sticker:
 			if err := p.stickerTasks(); err != nil {
 				return
 			}

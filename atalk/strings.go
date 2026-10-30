@@ -74,7 +74,7 @@ func Checksum(s string) uint16 {
 	var cksum uint16
 	for _, b := range []byte(s) {
 		cksum += uint16(b)
-		cksum = bits.RotateLeft16(cksum, -1)
+		cksum = bits.RotateLeft16(cksum, 1)
 	}
 	if cksum == 0 {
 		cksum = 0xFFFF

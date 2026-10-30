@@ -69,7 +69,7 @@ func main() {
 	if *verbose {
 		logLevel = slog.LevelDebug
 	}
-	logger := slog.New(tint.NewHandler(os.Stderr, &tint.Options{
+	logger := slog.New(tint.NewTextHandler(os.Stderr, &tint.Options{
 		NoColor: *noColour,
 		Level:   logLevel,
 	}))
@@ -84,34 +84,16 @@ func main() {
 		os.Exit(1)
 	}
 
-	localIP := net.ParseIP(cfg.LocalIP).To4()
-	if localIP == nil {
-		iaddrs, err := net.InterfaceAddrs()
-		if err != nil {
-			logger.Error("Couldn't read network interface addresses", "error", err)
-			os.Exit(1)
-		}
-		for _, iaddr := range iaddrs {
-			inet, ok := iaddr.(*net.IPNet)
-			if !ok {
-				continue
-			}
-			if !inet.IP.IsGlobalUnicast() {
-				continue
-			}
-			localIP = inet.IP.To4()
-			if localIP != nil {
-				break
-			}
-		}
-		if localIP == nil {
-			logger.Error("No global unicast IPv4 addresses on any network interfaces, and no valid local_ip address in configuration")
-			os.Exit(1)
-		}
+	localDI := aurp.IPDomainIdentifier(net.ParseIP(cfg.LocalIP).To4())
+	if localDI == nil {
+		localDI = defaultDomainIdentifier(logger)
 	}
-	localDI := aurp.IPDomainIdentifier(localIP)
+	if localDI == nil {
+		logger.Error("No global unicast IPv4 addresses on any network interfaces, and no valid local_ip address in configuration")
+		os.Exit(1)
+	}
 
-	logger.Debug("Starting up", "localIP", localIP, "ethertalk-config", cfg.EtherTalk)
+	logger.Debug("Starting up", "local_domain_identifier", localDI, "ethertalk-config", cfg.EtherTalk)
 
 	// ----------------------------- UDP listener -----------------------------
 	//
@@ -123,6 +105,8 @@ func main() {
 	defer udpConn.Close()
 	logger.Info("AURP: listening", "localaddr", udpConn.LocalAddr())
 
+	// ---------------------------- Ctrl-C handling ---------------------------
+	//
 	cctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -138,6 +122,7 @@ func main() {
 		Config:     cfg,
 		RouteTable: router.NewRouteTable(ctx),
 		AURPPeers:  router.NewAURPPeerTable(ctx, logger),
+		Identity:   localDI,
 	}
 
 	// --------------------------------- HTTP ---------------------------------
@@ -161,8 +146,81 @@ func main() {
 		logger.Error("The ethertalk config in jrouter.yaml was empty; at least one entry is required")
 		os.Exit(1)
 	}
+	// Each port is created with its own pcap handle.
+	cleanup := createEtherTalkPorts(logger, rooter)
+	defer cleanup()
 
-	for _, etcfg := range cfg.EtherTalk {
+	// -------------------------------- Peers ---------------------------------
+	// Fetch the peer list from the URL (if configured), then resolve them all
+	// to IPv4 addresses.
+	fetchPeerListURL(logger, rooter)
+	resolvePeerHostnames(ctx, logger, rooter, udpConn)
+
+	// -------------------------- Run all the things! -------------------------
+	// main blocks on this waitgroup before exiting the program
+	//
+	wg := new(sync.WaitGroup)
+
+	// -------------------------- Run EtherTalk ports -------------------------
+	//
+	for _, etPort := range rooter.Ports {
+		ctx := etPort.StatusCtx(ctx)
+
+		// Run AARP and RTMP on each port.
+		go etPort.RunAARP(ctx)
+		go etPort.RunRTMP(ctx)
+
+		// Start handling packets.
+		wg.Go(func() { etPort.Serve(ctx) })
+		wg.Go(func() { etPort.Outbox(ctx) })
+	}
+
+	// ------------------------------- Run AURP -------------------------------
+	// This happens after adding local networks to the routing table, so that
+	// we have networks to advertise to peers before connecting to them.
+	wg.Go(func() { rooter.AURPInput(ctx, logger, wg, udpConn) })
+	wg.Go(func() { rooter.AURPPeers.PeriodicallyAttemptConnections(ctx, logger, wg) })
+
+	// Among other things, peer handlers send outbound Open-Reqs, initiating
+	// outbound connections.
+	rooter.AURPPeers.RunAll(ctx, wg)
+
+	// Block until the various goroutines have all returned.
+	wg.Wait()
+}
+
+func defaultDomainIdentifier(logger *slog.Logger) aurp.IPDomainIdentifier {
+	iaddrs, err := net.InterfaceAddrs()
+	if err != nil {
+		logger.Error("Couldn't read network interface addresses", "error", err)
+		os.Exit(1)
+	}
+	for _, iaddr := range iaddrs {
+		inet, ok := iaddr.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		if !inet.IP.IsGlobalUnicast() {
+			continue
+		}
+
+		ip := inet.IP.To4()
+		if ip == nil {
+			continue
+		}
+		return aurp.IPDomainIdentifier(ip)
+	}
+	return nil
+}
+
+func createEtherTalkPorts(logger *slog.Logger, rooter *router.Router) (cleanup func()) {
+	var handles []*pcap.Handle
+	cleanup = func() {
+		for _, h := range handles {
+			h.Close()
+		}
+	}
+	for _, etcfg := range rooter.Config.EtherTalk {
 		// First check the interface
 		iface, err := net.InterfaceByName(etcfg.Device)
 		if err != nil {
@@ -186,13 +244,12 @@ func main() {
 			logger.Error("Couldn't open device for packet capture", "device", etcfg.Device, "error", err)
 			os.Exit(1)
 		}
+		handles = append(handles, handle)
 		bpfFilter := fmt.Sprintf("(atalk or aarp) and (ether multicast or ether dst %s)", myHWAddr)
 		if err := handle.SetBPFFilter(bpfFilter); err != nil {
-			handle.Close()
 			logger.Error("Couldn't set BPF filter on packet capture", "error", err)
 			os.Exit(1)
 		}
-		defer handle.Close()
 
 		zones := router.MakeSet(etcfg.DefaultZoneName)
 		zones.Insert(etcfg.ExtraZones...)
@@ -207,37 +264,42 @@ func main() {
 			handle,
 		)
 	}
+	return cleanup
+}
 
-	// -------------------------------- Peers ---------------------------------
-	// Fetch the peer list from the URL (if configured), then resolve them all
-	// to IPv4 addresses.
-	if cfg.PeerListURL != "" {
-		logger.Info("Fetching peer list", "peerlist-url", cfg.PeerListURL)
-		existing := len(cfg.Peers)
-		func() {
-			resp, err := http.Get(cfg.PeerListURL)
-			if err != nil {
-				logger.Error("Couldn't fetch peer list", "error", err)
-				os.Exit(1)
-			}
-			defer resp.Body.Close()
-
-			sc := bufio.NewScanner(resp.Body)
-			for sc.Scan() {
-				p := strings.TrimSpace(sc.Text())
-				if p == "" {
-					continue
-				}
-				cfg.Peers = append(cfg.Peers, p)
-			}
-			if err := sc.Err(); err != nil {
-				logger.Error("Couldn't scan peer list response", "peerlist-url", cfg.PeerListURL, "error", err)
-				os.Exit(1)
-			}
-		}()
-		logger.Info("Fetched list", "length", len(cfg.Peers)-existing)
+func fetchPeerListURL(logger *slog.Logger, rooter *router.Router) {
+	if rooter.Config.PeerListURL == "" {
+		return
 	}
+	logger.Info("Fetching peer list", "peerlist-url", rooter.Config.PeerListURL)
+	existing := len(rooter.Config.Peers)
+	func() {
+		resp, err := http.Get(rooter.Config.PeerListURL)
+		if err != nil {
+			logger.Error("Couldn't fetch peer list", "error", err)
+			os.Exit(1)
+		}
+		defer resp.Body.Close()
 
+		sc := bufio.NewScanner(resp.Body)
+		for sc.Scan() {
+			p := strings.TrimSpace(sc.Text())
+			if p == "" {
+				continue
+			}
+			rooter.Config.Peers = append(rooter.Config.Peers, p)
+		}
+		if err := sc.Err(); err != nil {
+			logger.Error("Couldn't scan peer list response", "peerlist-url", rooter.Config.PeerListURL, "error", err)
+			os.Exit(1)
+		}
+	}()
+	logger.Info("Fetched list", "length", len(rooter.Config.Peers)-existing)
+}
+
+// resolvePeerHostnames resolves all the configured peer hostnames to IP
+// addresses.
+func resolvePeerHostnames(ctx context.Context, logger *slog.Logger, rooter *router.Router, udpConn *net.UDPConn) {
 	// Resolve peers concurrently, to speed things up.
 	var resolverWG sync.WaitGroup
 	peerCh := make(chan string)
@@ -272,12 +334,12 @@ func main() {
 					continue
 				}
 
-				if raddr4.Equal(localIP) {
+				if raddr4.Equal(net.IP(rooter.Identity)) {
 					logger.Debug("Not adding self as peer", "configured-addr", peerStr, "raddr", raddr)
 					continue
 				}
 
-				if _, err := rooter.AURPPeers.LookupOrCreate(ctx, logger, rooter.RouteTable, udpConn, peerStr, raddr4, localDI, nil); err != nil {
+				if _, err := rooter.AURPPeers.LookupOrCreate(ctx, logger, rooter.RouteTable, udpConn, peerStr, raddr4, rooter.Identity, nil); err != nil {
 					logger.Warn("AURP: peer create", "error", err)
 					continue
 				}
@@ -285,7 +347,7 @@ func main() {
 		})
 	}
 
-	for _, peerStr := range cfg.Peers {
+	for _, peerStr := range rooter.Config.Peers {
 		if peerStr == "" {
 			continue
 		}
@@ -297,40 +359,4 @@ func main() {
 	}
 	close(peerCh)
 	resolverWG.Wait()
-
-	// -------------------------- Run all the things! -------------------------
-	// main blocks on this waitgroup before exiting the program
-	//
-	wg := new(sync.WaitGroup)
-	defer wg.Wait()
-
-	// -------------------------- Run EtherTalk ports -------------------------
-	//
-	for _, etPort := range rooter.Ports {
-		ctx := etPort.StatusCtx(ctx)
-
-		// Run AARP and RTMP on each port.
-		go etPort.RunAARP(ctx)
-		go etPort.RunRTMP(ctx)
-
-		// Start handling packets.
-		wg.Add(2)
-		go etPort.Serve(ctx, wg)
-		go etPort.Outbox(ctx, wg)
-	}
-
-	// ------------------------------- Run AURP -------------------------------
-	// This happens after adding local networks to the routing table, so that
-	// we have networks to advertise to peers before connecting to them.
-	wg.Add(1)
-	go rooter.AURPInput(ctx, logger, wg, cfg, udpConn, localDI)
-
-	wg.Add(1)
-	go rooter.AURPPeers.PeriodicallyAttemptConnections(ctx, logger, wg)
-
-	// Among other things, peer handlers send outbound Open-Reqs, initiating
-	// outbound connections.
-	rooter.AURPPeers.RunAll(ctx, wg)
-
-	// Note: main now blocks on wg.Wait() deferred above.
 }

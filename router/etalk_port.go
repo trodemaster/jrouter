@@ -136,9 +136,7 @@ func (router *Router) NewEtherTalkPort(
 
 // Outbox runs a loop that waits for AARP resolutions to complete, and once they
 // are, transmit packets that were buffered.
-func (port *EtherTalkPort) Outbox(ctx context.Context, wg *sync.WaitGroup) {
-	defer wg.Done()
-
+func (port *EtherTalkPort) Outbox(ctx context.Context) {
 	var statusStr atomic.Value
 	statusStr.Store("Initialising")
 	ctx, _ = status.AddItem(ctx,
@@ -153,8 +151,7 @@ func (port *EtherTalkPort) Outbox(ctx context.Context, wg *sync.WaitGroup) {
 	)
 	defer statusStr.Store("EtherTalk Outbox goroutine exited!")
 
-	resolveTicker := time.NewTicker(aarpRequestRetransmit)
-	defer resolveTicker.Stop()
+	resolveTicker := time.Tick(aarpRequestRetransmit)
 
 	for {
 		// First time I'm using [reflect.Select]!
@@ -172,8 +169,8 @@ func (port *EtherTalkPort) Outbox(ctx context.Context, wg *sync.WaitGroup) {
 			}
 
 			statusStr.Store(fmt.Sprintf("Waiting on %d address resolutions", len(port.outboxes)))
-			// 2: case <-resolveTicker.C
-			cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(resolveTicker.C)})
+			// 2: case <-resolveTicker
+			cases = append(cases, reflect.SelectCase{Dir: reflect.SelectRecv, Chan: reflect.ValueOf(resolveTicker)})
 			// 3 to N: case <-waitCh
 			for waitCh := range port.outboxes {
 				cases = append(cases, reflect.SelectCase{
@@ -222,9 +219,7 @@ func (port *EtherTalkPort) Outbox(ctx context.Context, wg *sync.WaitGroup) {
 
 // Serve runs a loop that reads AARP or AppleTalk packets from the network
 // device, and handles them.
-func (port *EtherTalkPort) Serve(ctx context.Context, wg *sync.WaitGroup) {
-	defer wg.Done()
-
+func (port *EtherTalkPort) Serve(ctx context.Context) {
 	ctx, setStatus, _ := status.AddSimpleItem(ctx, "Inbound")
 	defer setStatus("EtherTalk Serve goroutine exited!")
 	setStatus(fmt.Sprintf("Listening on %s", port.device))

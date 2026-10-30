@@ -33,12 +33,10 @@ import (
 )
 
 // AURPInput is a packet listening loop on a UDP connection for AURP.
-func (r *Router) AURPInput(ctx context.Context, logger *slog.Logger, wg *sync.WaitGroup, cfg *Config, udpConn *net.UDPConn, localDI aurp.DomainIdentifier) {
-	defer wg.Done()
-
+func (r *Router) AURPInput(ctx context.Context, logger *slog.Logger, wg *sync.WaitGroup, udpConn *net.UDPConn) {
 	ctx, setStatus, _ := status.AddSimpleItem(ctx, "AURP inbound")
 	defer setStatus("Not running!")
-	setStatus(fmt.Sprintf("Listening on UDP port %d", cfg.ListenPort))
+	setStatus(fmt.Sprintf("Listening on UDP port %d", r.Config.ListenPort))
 
 	for {
 		if ctx.Err() != nil {
@@ -73,8 +71,8 @@ func (r *Router) AURPInput(ctx context.Context, logger *slog.Logger, wg *sync.Wa
 		logger.Debug("AURP: Read packet from peer", "pkt-type", reflect.TypeOf(pkt), "raddr", raddr, "sourceDI", dh.SourceDI)
 
 		var peer *AURPPeer
-		if cfg.OpenPeering {
-			p, err := r.AURPPeers.LookupOrCreate(ctx, logger, r.RouteTable, udpConn, "", raddr.IP, localDI, dh.SourceDI)
+		if r.Config.OpenPeering {
+			p, err := r.AURPPeers.LookupOrCreate(ctx, logger, r.RouteTable, udpConn, "", raddr.IP, r.Identity, dh.SourceDI)
 			if err != nil {
 				logger.Warn("AURP: peer LookupOrCreate", "error", err)
 				continue
@@ -99,8 +97,7 @@ func (r *Router) AURPInput(ctx context.Context, logger *slog.Logger, wg *sync.Wa
 		if !peer.Running() {
 			// Run the peer handler. It doesn't matter if it starts running
 			// concurrently.
-			wg.Add(1)
-			go peer.Handle(ctx, wg)
+			wg.Go(func() { peer.Handle(ctx) })
 		}
 
 		switch tpkt := pkt.(type) {
